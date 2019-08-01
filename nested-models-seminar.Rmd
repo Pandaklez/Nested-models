@@ -1,0 +1,949 @@
+---
+title: "nested-models-seminar"
+author: "Anna Klezovich"
+date: "26 07 2019"
+output:
+    html_document:
+        toc: true
+        toc_float: true
+        toc_depth: 2
+---
+
+```{r, echo=FALSE}
+library(mlmRev)
+library(lme4)
+library(ggplot2)
+library(lmtest)
+library(tidyverse)
+```
+
+## Crossed random effects
+
+Датасет про успеваемость учеников в зависимости от пола и социального статуса. При этом про всех известно в каких младших и средних школах они учились.
+```{r}
+load('pupils.RData')
+head(pupils)
+```
+
+```{r}
+ggplot(pupils, aes(x=factor(achievement), fill=factor(primary_school_id))) +
+geom_density(alpha=0.2)
+```
+
+```{r}
+ggplot(pupils, aes(x=factor(achievement), fill=factor(secondary_school_id))) +
+geom_density(alpha=0.2)
+```
+```{r}
+pupils_simple <- lm(achievement ~ sex + ses + primary_school_id, 
+                      data = pupils)
+summary(pupils_simple)
+```
+Смотрите, какой тут маленький r-squared!
+
+То же самое, но с secondary school id
+```{r}
+pupils_simple2 <- lm(achievement ~ sex + ses + secondary_school_id, 
+                      data = pupils)
+summary(pupils_simple2)
+```
+
+```{r}
+pupils_crossed <- lmer(achievement ~ sex + ses 
+                      + (1|primary_school_id) + (1|secondary_school_id), 
+                      data = pupils)
+summary(pupils_crossed)
+```
+
+```{r}
+AIC(pupils_crossed, pupils_simple)
+```
+
+Теперь у нас два сета рандомных эффектов для каждого ученика (Но вообще это уже и выше было видно, но вспомним еще раз ranef())
+
+Это вот и называется crossed random effects 
+```{r}
+glimpse(ranef(pupils_crossed))
+```
+
+## Nested random effects
+
+```{r}
+load('nurses.RData')
+head(nurses)
+```
+
+```{r}
+nurses_hier <- lmer(stress ~ age + sex + experience 
+                           + treatment + wardtype + hospsize 
+                           + (1|hospital) + (1|hospital:ward), 
+                           data = nurses)
+summary(nurses_hier)
+```
+
+A теперь сравним, что будет, если мы для модели, где рандомные эффекты логически устроены как nested, зафитим модель с crossed радномными эффектами.
+
+```{r}
+nurses_crossed <- lmer(stress ~ age  + sex + experience 
+                           + treatment + wardtype + hospsize 
+                           + (1|hospital) + (1|wardid), data = nurses)
+summary(nurses_crossed)
+```
+
+Упс, ничего не поменялось
+
+**Если мы для nested данных зафитим crossed модель, ничего не произойдет. Но наоборот это не работает!!!**
+
+"The blurring of mixed-effects models with the concept of multiple, hierarchical levels of variation results in an unwarranted emphasis on ‘levels’ when defining a model and leads to considerable confusion. It is perfectly legitimate to define models having random effects associated with non-nested factors. The reasons for the emphasis on defining random effects with respect to nested factors only are that such cases do occur frequently in practice, and that some of the computational methods for estimating the parameters in the models can only be easily applied to nested factors.
+
+This is not the case for the methods used in the lme4 package. Indeed there is nothing special done for models with random effects for nested factors. When random effects are associated with multiple factors, exactly the same computational methods are used whether the factors form a nested sequence or are partially crossed or are completely crossed."
+
+
+## Schools dataset
+
+Тут на слайдах есть объяснение
+
+## Мидии и еще немного про модели с вложенными эффектами
+
+Из курса СПбГУ
+
+Как подобрать лучшую формулу для данных с nested random effects
+
+```{r}
+astr2 <- read.csv('aster_mussel_full.csv', header = TRUE)
+head(astr2)
+```
+
+```{r}
+str(astr2)
+```
+
+Поправим переменные
+```{r}
+astr2$Year <- factor(astr2$Year)
+astr2$Out <- ifelse(test = astr2$Outcome == 'eaten', yes = 1,  no = 0)
+```
+
+Вчера у нас на семинаре не захотелась считаться anova для нескольких моделей и мы делали что-то такое: speed_dating[!is.na(speed_dating$intelligent_sc),]
+
+Но это можно делать более аккуратно:
+```{r}
+colSums(is.na(astr2))
+```
+
+Смотрим нет ли большого дисбаланса в выборке
+```{r}
+table(astr2$Box)
+```
+
+```{r}
+library(cowplot)
+Pl_Sp   <- ggplot(astr2, aes(x = Sp, y = L)) + geom_boxplot()
+Pl_exp  <- ggplot(astr2, aes(x = Experiment, y = L)) + geom_boxplot()
+Pl_year <- ggplot(astr2, aes(x = Year, y = L)) + geom_boxplot()
+plot_grid(Pl_Sp, Pl_exp, Pl_year, ncol = 3, rel_widths = c(0.25, 0.45, 0.3))
+```
+
+Нужно включить в модель взаимодействие между годом и длиной L, потому что видно что в 2016 что-то не так пошло. Всё остальное нормально более-менее
+
+```{r}
+model1_ri <- glmer(Out ~ L * Sp * Year + (1|Experiment/Box),
+                   data = astr2, family = binomial(link = 'logit'))
+summary(model1_ri)
+```
+
+```{r}
+?convergence
+```
+
+Можно стандартизировать предиктор
+```{r}
+astr2$L_scaled <- as.numeric(scale(astr2$L))
+
+model1_ri <- glmer(Out ~ L_scaled * Sp * Year + (1|Experiment/Box),
+                   data = astr2, family = binomial(link = 'logit'))
+```
+
+Ну всё, у нас всё прикольно, давайте усложним модель
+```{r}
+model1_rsi <- glmer(Out ~ L_scaled * Sp * Year + (1 + L_scaled |Experiment/Box),
+                      data = astr2, family = binomial(link = 'logit'))
+```
+
+Не сошлось
+
+Можно попробовать ослабить правила и разрешить модели сходится дольше/больше эпох
+```{r}
+model1_rsi <- glmer(Out ~ L_scaled * Sp * Year + (1 + L_scaled |Experiment/Box) ,
+            data = astr2, family = binomial(link = 'logit'),
+            control = glmerControl(optimizer = 'bobyqa', optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+AIC(model1_ri, model1_rsi)
+```
+
+Выбрали модель
+
+Stepwise model selection
+
+Функция drop1(), чтобы выбирать между моделями, какие предикторы включать, а какие нет
+```{r}
+drop1(model1_ri)
+model2 <- update(model1_ri, .~.-L_scaled:Sp:Year)
+
+drop1(model2)
+model3 <- update(model2, . ~ . - L_scaled:Year)
+
+drop1(model3)
+model4 <- update(model3, . ~ . - L_scaled:Sp)
+
+drop1(model4)
+model5 <- update(model4, . ~ . - Sp:Year)
+
+drop1(model5)
+model6 <- update(model5, . ~ . - Year)
+
+# Финальная модель
+drop1(model6)
+```
+
+```{r}
+AIC(model1_ri, model6)
+```
+
+```{r}
+summary(model6)$call
+```
+
+
+## Ещё немного про convergence warnings
+
+Иногда так бывает, что модели не сходятся. Особенно часто это случается с glmer
+
+```{r}
+library("numDeriv")
+library("reshape2")
+library("plyr"); library("dplyr")
+library("RColorBrewer")
+```
+
+```{r}
+df <- structure(list(SUR.ID = structure(c(1L, 1L, 2L, 2L, 3L, 3L, 1L, 
+1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 
+3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 
+2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 
+1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 
+3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 
+2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 
+1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 
+3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 
+2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 
+1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 
+3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 
+2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 
+1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 3L, 1L, 1L, 2L, 2L, 3L, 
+3L, 1L, 1L, 2L, 2L), .Label = c("10185", "10186", "10250"), class = "factor"), 
+    tm = structure(c(1L, 2L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 
+    1L, 2L, 2L, 1L, 2L, 1L, 2L, 1L, 1L, 2L, 2L, 1L, 1L, 2L, 1L, 
+    2L, 1L, 2L, 1L, 2L, 1L, 2L, 2L, 1L, 1L, 2L, 1L, 2L, 2L, 1L, 
+    1L, 2L, 2L, 1L, 2L, 1L, 1L, 2L, 2L, 1L, 1L, 2L, 1L, 2L, 1L, 
+    2L, 2L, 1L, 1L, 2L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 
+    2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 
+    1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 
+    2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 
+    1L, 2L, 1L, 2L, 1L, 2L, 1L, 1L, 2L, 2L, 1L, 1L, 2L, 2L, 1L, 
+    2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 
+    1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 
+    2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 
+    1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 
+    2L, 1L, 1L, 2L, 1L, 2L, 2L, 1L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 
+    2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L, 1L, 2L
+    ), .Label = c("CT", "PT-04"), class = "factor"), ValidDetections = c(0L, 
+    0L, 6L, 5L, 1L, 7L, 0L, 0L, 5L, 8L, 7L, 3L, 0L, 0L, 1L, 4L, 
+    1L, 0L, 0L, 0L, 0L, 1L, 2L, 1L, 0L, 0L, 0L, 0L, 2L, 0L, 0L, 
+    0L, 3L, 5L, 5L, 4L, 0L, 0L, 6L, 7L, 6L, 5L, 0L, 0L, 0L, 1L, 
+    2L, 1L, 0L, 0L, 0L, 0L, 1L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 23L, 
+    21L, 15L, 28L, 11L, 27L, 22L, 31L, 29L, 30L, 32L, 45L, 18L, 
+    19L, 29L, 26L, 32L, 43L, 7L, 5L, 7L, 4L, 6L, 10L, 0L, 0L, 
+    0L, 0L, 0L, 0L, 24L, 22L, 19L, 23L, 21L, 34L, 9L, 13L, 30L, 
+    25L, 33L, 21L, 4L, 18L, 22L, 29L, 11L, 38L, 2L, 7L, 5L, 7L, 
+    6L, 9L, 0L, 0L, 0L, 0L, 0L, 0L, 23L, 20L, 24L, 26L, 29L, 
+    34L, 6L, 7L, 5L, 4L, 6L, 10L, 0L, 0L, 3L, 0L, 1L, 6L, 0L, 
+    0L, 0L, 1L, 1L, 1L, 0L, 0L, 0L, 2L, 0L, 5L, 0L, 0L, 0L, 0L, 
+    0L, 1L, 0L, 0L, 0L, 3L, 1L, 11L, 0L, 0L, 2L, 5L, 1L, 2L, 
+    0L, 0L, 0L, 3L, 0L, 4L, 0L, 0L, 0L, 2L, 0L, 2L, 0L, 0L, 0L, 
+    0L, 0L, 0L, 0L, 0L, 4L, 2L, 5L, 6L, 6L, 2L, 3L, 0L, 0L, 1L, 
+    3L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 21L, 12L, 
+    15L, 8L, 23L, 7L, 2L, 2L, 1L, 1L), CountDetections = c(0L, 
+    0L, 7L, 5L, 3L, 7L, 0L, 0L, 5L, 8L, 8L, 4L, 0L, 0L, 1L, 4L, 
+    1L, 1L, 0L, 0L, 0L, 1L, 3L, 3L, 0L, 0L, 1L, 0L, 2L, 4L, 0L, 
+    0L, 4L, 5L, 5L, 5L, 0L, 0L, 6L, 7L, 7L, 5L, 0L, 0L, 0L, 1L, 
+    2L, 2L, 0L, 0L, 0L, 0L, 1L, 1L, 0L, 0L, 0L, 0L, 0L, 2L, 23L, 
+    21L, 18L, 28L, 11L, 27L, 23L, 31L, 29L, 30L, 34L, 45L, 19L, 
+    19L, 29L, 26L, 32L, 43L, 7L, 5L, 7L, 4L, 6L, 10L, 0L, 0L, 
+    0L, 0L, 0L, 0L, 24L, 22L, 19L, 23L, 21L, 34L, 10L, 15L, 30L, 
+    25L, 34L, 24L, 4L, 19L, 23L, 29L, 13L, 38L, 2L, 7L, 5L, 7L, 
+    7L, 9L, 0L, 0L, 0L, 0L, 0L, 0L, 23L, 20L, 24L, 26L, 29L, 
+    34L, 6L, 7L, 5L, 4L, 6L, 10L, 0L, 0L, 4L, 1L, 1L, 7L, 0L, 
+    0L, 0L, 3L, 2L, 1L, 0L, 0L, 0L, 3L, 0L, 5L, 0L, 0L, 2L, 2L, 
+    0L, 1L, 0L, 0L, 0L, 5L, 1L, 11L, 0L, 0L, 3L, 5L, 1L, 2L, 
+    0L, 0L, 2L, 3L, 0L, 6L, 0L, 0L, 0L, 3L, 0L, 3L, 0L, 0L, 1L, 
+    0L, 0L, 1L, 0L, 0L, 6L, 2L, 5L, 6L, 7L, 4L, 5L, 1L, 0L, 3L, 
+    3L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 23L, 12L, 
+    16L, 10L, 23L, 10L, 2L, 2L, 1L, 1L), FalseDetections = c(0L, 
+    0L, 1L, 0L, 2L, 0L, 0L, 0L, 0L, 0L, 1L, 1L, 0L, 0L, 0L, 0L, 
+    0L, 1L, 0L, 0L, 0L, 0L, 1L, 2L, 0L, 0L, 1L, 0L, 0L, 4L, 0L, 
+    0L, 1L, 0L, 0L, 1L, 0L, 0L, 0L, 0L, 1L, 0L, 0L, 0L, 0L, 0L, 
+    0L, 1L, 0L, 0L, 0L, 0L, 0L, 1L, 0L, 0L, 0L, 0L, 0L, 2L, 0L, 
+    0L, 3L, 0L, 0L, 0L, 1L, 0L, 0L, 0L, 2L, 0L, 1L, 0L, 0L, 0L, 
+    0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 
+    0L, 0L, 0L, 0L, 0L, 1L, 2L, 0L, 0L, 1L, 3L, 0L, 1L, 1L, 0L, 
+    2L, 0L, 0L, 0L, 0L, 0L, 1L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 
+    0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 1L, 1L, 
+    0L, 1L, 0L, 0L, 0L, 2L, 1L, 0L, 0L, 0L, 0L, 1L, 0L, 0L, 0L, 
+    0L, 2L, 2L, 0L, 0L, 0L, 0L, 0L, 2L, 0L, 0L, 0L, 0L, 1L, 0L, 
+    0L, 0L, 0L, 0L, 2L, 0L, 0L, 2L, 0L, 0L, 0L, 1L, 0L, 1L, 0L, 
+    0L, 1L, 0L, 0L, 1L, 0L, 0L, 2L, 0L, 0L, 0L, 1L, 2L, 2L, 1L, 
+    0L, 2L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 2L, 
+    0L, 1L, 2L, 0L, 3L, 0L, 0L, 0L, 0L), replicate = structure(c(1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L), .Label = c("1", "2"), class = "factor"), 
+    Area = structure(c(1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L
+    ), .Label = c("Drug Channel", "Finger"), class = "factor"), 
+    Day = structure(c(1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+    1L, 1L, 1L, 1L, 1L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 
+    2L, 2L, 2L, 2L, 2L, 3L, 3L, 3L, 3L, 3L, 3L, 3L, 3L, 3L, 3L, 
+    3L, 3L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 
+    4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 
+    4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 
+    4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 4L, 
+    4L, 4L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 
+    5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L
+    ), .Label = c("03/06/13", "2/22/13", "2/26/13", "2/27/13", 
+    "3/14/13"), class = "factor"), R.det = c(0, 0, 0.857142857, 
+    1, 0.333333333, 1, 0, 0, 1, 1, 0.875, 0.75, 0, 0, 1, 1, 1, 
+    0, 0, 0, 0, 1, 0.666666667, 0.333333333, 0, 0, 0, 0, 1, 0, 
+    0, 0, 0.75, 1, 1, 0.8, 0, 0, 1, 1, 0.857142857, 1, 0, 0, 
+    0, 1, 1, 0.5, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0.833333333, 
+    1, 1, 1, 0.956521739, 1, 1, 1, 0.941176471, 1, 0.947368421, 
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 
+    1, 1, 1, 1, 0.9, 0.866666667, 1, 1, 0.970588235, 0.875, 1, 
+    0.947368421, 0.956521739, 1, 0.846153846, 1, 1, 1, 1, 1, 
+    0.857142857, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 
+    1, 1, 1, 1, 0, 0, 0.75, 0, 1, 0.857142857, 0, 0, 0, 0.333333333, 
+    0.5, 1, 0, 0, 0, 0.666666667, 0, 1, 0, 0, 0, 0, 0, 1, 0, 
+    0, 0, 0.6, 1, 1, 0, 0, 0.666666667, 1, 1, 1, 0, 0, 0, 1, 
+    0, 0.666666667, 0, 0, 0, 0.666666667, 0, 0.666666667, 0, 
+    0, 0, 0, 0, 0, 0, 0, 0.666666667, 1, 1, 1, 0.857142857, 0.5, 
+    0.6, 0, 0, 0.333333333, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+    0, 0.913043478, 1, 0.9375, 0.8, 1, 0.7, 1, 1, 1, 1), c.receiver.depth = c(-0.2, 
+    -0.2, -0.2, -0.2, -0.2, -0.2, -0.22, -0.22, -0.22, -0.22, 
+    -0.22, -0.22, -0.22, -0.22, -0.22, -0.22, -0.22, -0.22, -0.225, 
+    -0.225, -0.225, -0.225, -0.225, -0.225, -0.225, -0.225, -0.225, 
+    -0.225, -0.225, -0.225, -0.205, -0.205, -0.205, -0.205, -0.205, 
+    -0.205, -0.185, -0.185, -0.185, -0.185, -0.185, -0.185, -0.18, 
+    -0.18, -0.18, -0.18, -0.18, -0.18, -0.165, -0.165, -0.165, 
+    -0.165, -0.165, -0.165, -0.14, -0.14, -0.14, -0.14, -0.14, 
+    -0.14, -0.34, -0.34, -0.34, -0.34, -0.34, -0.34, -0.365, 
+    -0.365, -0.365, -0.365, -0.365, -0.365, -0.365, -0.365, -0.365, 
+    -0.365, -0.365, -0.365, -0.38, -0.38, -0.38, -0.38, -0.38, 
+    -0.38, -0.385, -0.385, -0.385, -0.385, -0.385, -0.385, -0.395, 
+    -0.395, -0.395, -0.395, -0.395, -0.395, -0.4, -0.4, -0.4, 
+    -0.4, -0.4, -0.4, -0.395, -0.395, -0.395, -0.395, -0.395, 
+    -0.395, -0.38, -0.38, -0.38, -0.38, -0.38, -0.38, -0.37, 
+    -0.37, -0.37, -0.37, -0.37, -0.37, -0.285, -0.285, -0.285, 
+    -0.285, -0.285, -0.285, -0.31, -0.31, -0.31, -0.31, -0.31, 
+    -0.31, 0.22, 0.22, 0.22, 0.22, 0.22, 0.22, 0.225, 0.225, 
+    0.225, 0.225, 0.225, 0.225, 0.225, 0.225, 0.225, 0.225, 0.225, 
+    0.225, 0.21, 0.21, 0.21, 0.21, 0.21, 0.21, 0.185, 0.185, 
+    0.185, 0.185, 0.185, 0.185, 0.175, 0.175, 0.175, 0.175, 0.175, 
+    0.175, 0.14, 0.14, 0.14, 0.14, 0.14, 0.14, 0.13, 0.13, 0.13, 
+    0.13, 0.13, 0.13, 0.105, 0.105, 0.105, 0.105, 0.105, 0.105, 
+    0.215, 0.215, 0.215, 0.215, 0.215, 0.215, 0.54, 0.54, 0.54, 
+    0.54, 0.54, 0.54, 0.525, 0.525, 0.525, 0.525, 0.525, 0.525, 
+    0.515, 0.515, 0.515, 0.515, 0.515, 0.515, 0.545, 0.545, 0.545, 
+    0.545, 0.545, 0.545, 0.525, 0.525, 0.525, 0.525), c.tm.depth = c(0.042807692, 
+    0.042807692, 0.042807692, 0.042807692, 0.042807692, 0.042807692, 
+    -0.282192308, -0.282192308, -0.282192308, -0.282192308, -0.282192308, 
+    -0.282192308, -0.427192308, -0.427192308, -0.427192308, -0.427192308, 
+    -0.427192308, -0.427192308, -0.027192308, -0.027192308, -0.027192308, 
+    -0.027192308, -0.027192308, -0.027192308, 0.022807692, 0.022807692, 
+    0.022807692, 0.022807692, 0.022807692, 0.022807692, 0.042807692, 
+    0.042807692, 0.042807692, 0.042807692, 0.042807692, 0.042807692, 
+    -0.267192308, -0.267192308, -0.267192308, -0.267192308, -0.267192308, 
+    -0.267192308, -0.312192308, -0.312192308, -0.312192308, -0.312192308, 
+    -0.312192308, -0.312192308, 0.062807692, 0.062807692, 0.062807692, 
+    0.062807692, 0.062807692, 0.062807692, 0.127807692, 0.127807692, 
+    0.127807692, 0.127807692, 0.127807692, 0.127807692, -0.592192308, 
+    -0.592192308, -0.592192308, -0.592192308, -0.592192308, -0.592192308, 
+    -0.612192308, -0.612192308, -0.612192308, -0.612192308, -0.612192308, 
+    -0.612192308, -0.597192308, -0.597192308, -0.597192308, -0.597192308, 
+    -0.597192308, -0.597192308, -0.607192308, -0.607192308, -0.607192308, 
+    -0.607192308, -0.607192308, -0.607192308, -0.327192308, -0.327192308, 
+    -0.327192308, -0.327192308, -0.327192308, -0.327192308, -0.572192308, 
+    -0.572192308, -0.572192308, -0.572192308, -0.572192308, -0.572192308, 
+    -0.622192308, -0.622192308, -0.622192308, -0.622192308, -0.622192308, 
+    -0.622192308, -0.572192308, -0.572192308, -0.572192308, -0.572192308, 
+    -0.572192308, -0.572192308, -0.577192308, -0.577192308, -0.577192308, 
+    -0.577192308, -0.577192308, -0.577192308, -0.272192308, -0.272192308, 
+    -0.272192308, -0.272192308, -0.272192308, -0.272192308, -0.547192308, 
+    -0.547192308, -0.547192308, -0.547192308, -0.547192308, -0.547192308, 
+    -0.607192308, -0.607192308, -0.607192308, -0.607192308, -0.607192308, 
+    -0.607192308, 0.552807692, 0.552807692, 0.552807692, 0.552807692, 
+    0.552807692, 0.552807692, 0.402807692, 0.402807692, 0.402807692, 
+    0.402807692, 0.402807692, 0.402807692, 0.777807692, 0.777807692, 
+    0.777807692, 0.777807692, 0.777807692, 0.777807692, 0.752807692, 
+    0.752807692, 0.752807692, 0.752807692, 0.752807692, 0.752807692, 
+    0.752807692, 0.752807692, 0.752807692, 0.752807692, 0.752807692, 
+    0.752807692, 0.402807692, 0.402807692, 0.402807692, 0.402807692, 
+    0.402807692, 0.402807692, 0.292807692, 0.292807692, 0.292807692, 
+    0.292807692, 0.292807692, 0.292807692, 0.667807692, 0.667807692, 
+    0.667807692, 0.667807692, 0.667807692, 0.667807692, 0.677807692, 
+    0.677807692, 0.677807692, 0.677807692, 0.677807692, 0.677807692, 
+    0.777807692, 0.777807692, 0.777807692, 0.777807692, 0.777807692, 
+    0.777807692, 0.252807692, 0.252807692, 0.252807692, 0.252807692, 
+    0.252807692, 0.252807692, 0.352807692, 0.352807692, 0.352807692, 
+    0.352807692, 0.352807692, 0.352807692, 0.502807692, 0.502807692, 
+    0.502807692, 0.502807692, 0.502807692, 0.502807692, 0.027807692, 
+    0.027807692, 0.027807692, 0.027807692, 0.027807692, 0.027807692, 
+    0.077807692, 0.077807692, 0.077807692, 0.077807692), c.temp = c(-4.095807692, 
+    -4.095807692, -4.095807692, -4.095807692, -4.095807692, -4.095807692, 
+    -4.220807692, -4.220807692, -4.220807692, -4.220807692, -4.220807692, 
+    -4.220807692, -4.210807692, -4.210807692, -4.210807692, -4.210807692, 
+    -4.210807692, -4.210807692, -4.175807692, -4.175807692, -4.175807692, 
+    -4.175807692, -4.175807692, -4.175807692, -4.035807692, -4.035807692, 
+    -4.035807692, -4.035807692, -4.035807692, -4.035807692, -3.920807692, 
+    -3.920807692, -3.920807692, -3.920807692, -3.920807692, -3.920807692, 
+    -3.820807692, -3.820807692, -3.820807692, -3.820807692, -3.820807692, 
+    -3.820807692, -3.640807692, -3.640807692, -3.640807692, -3.640807692, 
+    -3.640807692, -3.640807692, -3.660807692, -3.660807692, -3.660807692, 
+    -3.660807692, -3.660807692, -3.660807692, -3.620807692, -3.620807692, 
+    -3.620807692, -3.620807692, -3.620807692, -3.620807692, 0.074192308, 
+    0.074192308, 0.074192308, 0.074192308, 0.074192308, 0.074192308, 
+    -0.015807692, -0.015807692, -0.015807692, -0.015807692, -0.015807692, 
+    -0.015807692, 0.324192308, 0.324192308, 0.324192308, 0.324192308, 
+    0.324192308, 0.324192308, 0.544192308, 0.544192308, 0.544192308, 
+    0.544192308, 0.544192308, 0.544192308, 0.759192308, 0.759192308, 
+    0.759192308, 0.759192308, 0.759192308, 0.759192308, 1.324192308, 
+    1.324192308, 1.324192308, 1.324192308, 1.324192308, 1.324192308, 
+    1.549192308, 1.549192308, 1.549192308, 1.549192308, 1.549192308, 
+    1.549192308, 1.709192308, 1.709192308, 1.709192308, 1.709192308, 
+    1.709192308, 1.709192308, 1.639192308, 1.639192308, 1.639192308, 
+    1.639192308, 1.639192308, 1.639192308, 1.579192308, 1.579192308, 
+    1.579192308, 1.579192308, 1.579192308, 1.579192308, 2.724192308, 
+    2.724192308, 2.724192308, 2.724192308, 2.724192308, 2.724192308, 
+    2.839192308, 2.839192308, 2.839192308, 2.839192308, 2.839192308, 
+    2.839192308, 1.064192308, 1.064192308, 1.064192308, 1.064192308, 
+    1.064192308, 1.064192308, 1.184192308, 1.184192308, 1.184192308, 
+    1.184192308, 1.184192308, 1.184192308, 1.254192308, 1.254192308, 
+    1.254192308, 1.254192308, 1.254192308, 1.254192308, 1.379192308, 
+    1.379192308, 1.379192308, 1.379192308, 1.379192308, 1.379192308, 
+    1.529192308, 1.529192308, 1.529192308, 1.529192308, 1.529192308, 
+    1.529192308, 1.599192308, 1.599192308, 1.599192308, 1.599192308, 
+    1.599192308, 1.599192308, 1.669192308, 1.669192308, 1.669192308, 
+    1.669192308, 1.669192308, 1.669192308, 1.664192308, 1.664192308, 
+    1.664192308, 1.664192308, 1.664192308, 1.664192308, 1.714192308, 
+    1.714192308, 1.714192308, 1.714192308, 1.714192308, 1.714192308, 
+    0.984192308, 0.984192308, 0.984192308, 0.984192308, 0.984192308, 
+    0.984192308, -1.545807692, -1.545807692, -1.545807692, -1.545807692, 
+    -1.545807692, -1.545807692, -1.475807692, -1.475807692, -1.475807692, 
+    -1.475807692, -1.475807692, -1.475807692, -1.460807692, -1.460807692, 
+    -1.460807692, -1.460807692, -1.460807692, -1.460807692, -1.340807692, 
+    -1.340807692, -1.340807692, -1.340807692, -1.340807692, -1.340807692, 
+    -1.265807692, -1.265807692, -1.265807692, -1.265807692), 
+    c.wind = c(1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, 1.27535159, 1.27535159, 1.27535159, 1.27535159, 
+    1.27535159, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, -2.96855001, -2.96855001, -2.96855001, -2.96855001, 
+    -2.96855001, 4.71144999, 4.71144999, 4.71144999, 4.71144999, 
+    4.71144999, 4.71144999, 4.71144999, 4.71144999, 4.71144999, 
+    4.71144999, 4.71144999, 4.71144999, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, -2.939182972, -2.939182972, 
+    -2.939182972, -2.939182972, -2.939182972, 5.88092439, 5.88092439, 
+    5.88092439, 5.88092439, 5.88092439, 5.88092439, 5.88092439, 
+    5.88092439, 5.88092439, 5.88092439, 5.88092439, 5.88092439, 
+    5.88092439, 5.88092439, 5.88092439, 5.88092439, 5.88092439, 
+    5.88092439, 5.88092439, 5.88092439, 5.88092439, 5.88092439, 
+    5.88092439, 5.88092439, 5.88092439, 5.88092439, 5.88092439, 
+    5.88092439), c.distance = c(-160L, -160L, -160L, -160L, -160L, 
+    -160L, -110L, -110L, -110L, -110L, -110L, -110L, -10L, -10L, 
+    -10L, -10L, -10L, -10L, 90L, 90L, 90L, 90L, 90L, 90L, 190L, 
+    190L, 190L, 190L, 190L, 190L, -160L, -160L, -160L, -160L, 
+    -160L, -160L, -110L, -110L, -110L, -110L, -110L, -110L, -10L, 
+    -10L, -10L, -10L, -10L, -10L, 90L, 90L, 90L, 90L, 90L, 90L, 
+    190L, 190L, 190L, 190L, 190L, 190L, -160L, -160L, -160L, 
+    -160L, -160L, -160L, -110L, -110L, -110L, -110L, -110L, -110L, 
+    -10L, -10L, -10L, -10L, -10L, -10L, 90L, 90L, 90L, 90L, 90L, 
+    90L, 190L, 190L, 190L, 190L, 190L, 190L, -160L, -160L, -160L, 
+    -160L, -160L, -160L, -110L, -110L, -110L, -110L, -110L, -110L, 
+    -10L, -10L, -10L, -10L, -10L, -10L, 90L, 90L, 90L, 90L, 90L, 
+    90L, 190L, 190L, 190L, 190L, 190L, 190L, -160L, -160L, -160L, 
+    -160L, -160L, -160L, -110L, -110L, -110L, -110L, -110L, -110L, 
+    -110L, -110L, -110L, -110L, -110L, -110L, -10L, -10L, -10L, 
+    -10L, -10L, -10L, 90L, 90L, 90L, 90L, 90L, 90L, 190L, 190L, 
+    190L, 190L, 190L, 190L, -160L, -160L, -160L, -160L, -160L, 
+    -160L, -110L, -110L, -110L, -110L, -110L, -110L, -10L, -10L, 
+    -10L, -10L, -10L, -10L, 90L, 90L, 90L, 90L, 90L, 90L, 190L, 
+    190L, 190L, 190L, 190L, 190L, -160L, -160L, -160L, -160L, 
+    -160L, -160L, -10L, -10L, -10L, -10L, -10L, -10L, 90L, 90L, 
+    90L, 90L, 90L, 90L, 190L, 190L, 190L, 190L, 190L, 190L, -160L, 
+    -160L, -160L, -160L, -160L, -160L, -110L, -110L, -110L, -110L
+    )), .Names = c("SUR.ID", "tm", "ValidDetections", "CountDetections", 
+"FalseDetections", "replicate", "Area", "Day", "R.det", "c.receiver.depth", 
+"c.tm.depth", "c.temp", "c.wind", "c.distance"), row.names = c(NA, 
+-220L), class = "data.frame")
+```
+
+```{r}
+df$SUR.ID <- factor(df$SUR.ID)
+df$replicate <- factor(df$replicate)
+Rdet <- cbind(df$ValidDetections,df$FalseDetections)
+Unit <- factor(1:length(df$ValidDetections))
+```
+
+```{r}
+m1 <- glmer(Rdet ~ tm:Area + tm:c.distance +
+            c.distance:Area + c.tm.depth:Area +
+            c.receiver.depth:Area + c.temp:Area +
+            c.wind:Area +
+            c.tm.depth + c.receiver.depth +
+            c.temp +c.wind + tm + c.distance + Area +
+            replicate +
+            (1|SUR.ID) + (1|Day) + (1|Unit) ,
+            data = df, family = binomial(link=logit))
+```
+
+```{r}
+length(fixef(m1))
+```
+
+Многовато будет...
+
+1) We can rescale and center continuous parameters
+(as.numeric(scale(param)))
+
+Большая разница между мин и макс значениями не обязательно портит схождение модели, но такое бывает и лучше исправить эту проблему сразу. (В принципе для этого же и задают контрасты, как вчера на линг данных)
+```{r}
+numcols <- grep("^c\\.",names(df))
+dfs <- df
+dfs[,numcols] <- scale(dfs[,numcols])
+m1_sc <- update(m1,data=dfs)
+```
+
+2) Singularity
+Определение: some of the constrained parameters of the random effects theta parameters are on the boundary (equal to zero, or very very close to zero, say <10−6
+```{r}
+tt <- getME(m1_sc,"theta")
+ll <- getME(m1_sc,"lower")
+min(tt[ll==0])
+```
+
+Тут всё ок с сингулярностью
+
+3) Restart from previous fit
+restart the fit from the reported optimum, or from a point perturbed slightly away from the reported optimum
+
+maxfun - maximum number of function evaluations - то есть эта штука увеличает количество итераций
+```{r}
+ss <- getME(m1_sc,c("theta","fixef"))
+m2 <- update(m1_sc,start=ss,control=glmerControl(optCtrl=list(maxfun=2e4)))
+```
+Всё равно не сошлась, но смотрите, значение, на котором она не сошлась падает.
+
+4) Попробовать другой оптимизатор (И увеличили количество итераций)
+
+```{r}
+m3 <- update(m1_sc,start=ss,control=glmerControl(optimizer="bobyqa",
+                            optCtrl=list(maxfun=2e5)))
+```
+
+```{r}
+aa <- allFit(m1)
+```
+
+```{r}
+library(optimx)
+m4 <- update(m1_sc,start=ss,control=glmerControl(optimizer="optimx"))
+```
+
+
+Давайте ещё раз всё посмотрим на датасете sleepstudy
+```{r}
+data("sleepstudy")
+head(sleepstudy)
+fm1 <- lmer(Reaction ~ Days + Days^2 + (Days | Subject), data=sleepstudy)
+summary(fm1)
+```
+
+Scale parameters:
+```{r}
+## 2. center and scale predictors:
+ss.CS <- transform(sleepstudy, Days=scale(Days))
+fm1.CS <- update(fm1, data=ss.CS)
+```
+
+decrease stopping tolerances
+```{r}
+strict_tol <- lmerControl(optCtrl=list(xtol_abs=1e-8, ftol_abs=1e-8))
+if (all(fm1@optinfo$optimizer=="nloptwrap")) {
+    fm1.tol <- update(fm1, control=strict_tol)
+}
+```
+
+try all available optimizers
+```{r}
+  fm1.all <- allFit(fm1)
+  ss <- summary(fm1.all)
+  ss$ fixef               ## fixed effects
+  ss$ llik                ## log-likelihoods
+  ss$ sdcor               ## SDs and correlations
+  ss$ theta               ## Cholesky factors
+  ss$ which.OK            ## which fits worked
+```
+
+
+
+
+## Длинные драконы с разных гор
+
+```{r}
+load('dragons.RData')
+head(dragons)
+```
+
+Короче мы поехали в горы и замерили там длину тела дракона и все драконы прошли тест на интеллектуальный уровень. И нам интересно, зависит ли testscore от длины дракона
+
+```{r}
+hist(dragons$testScore)  # normal distribution
+```
+
+```{r}
+dragons$bodyLength2 <- scale(dragons$bodyLength)
+head(dragons)
+```
+
+```{r}
+basic.lm <- lm(testScore ~ bodyLength2, data = dragons)
+summary(basic.lm)
+```
+
+Уже надоели эти preliminary plots, но что поделать
+```{r}
+(prelim_plot <- ggplot(dragons, aes(x = bodyLength, y = testScore)) +
+  geom_point() +
+  geom_smooth(method = "lm"))
+```
+Аа что? Более большие драконы - более умные?
+
+Красная линия должна быть почти ровная
+```{r}
+plot(basic.lm, which = 1)
+```
+
+Ну тут тоже ничего
+
+```{r}
+plot(basic.lm, which = 2)
+```
+
+Тогда проверим на независимость наблюдений. Упс у нас есть какие-то тренды в зависимости от того, из каких гор эти драконы
+```{r}
+boxplot(testScore ~ mountainRange, data = dragons)
+```
+
+Появляются какие-то группки. Это значит, что наблюдения с одного горного массива зависят друг от друга
+```{r}
+(colour_plot <- ggplot(dragons, aes(x = bodyLength, y = testScore, colour = mountainRange)) +
+  geom_point(size = 2) +
+  theme_classic() +
+  theme(legend.position = "none"))
+```
+
+Больше графиков
+
+```{r}
+(split_plot <- ggplot(aes(bodyLength, testScore), data = dragons) + 
+  geom_point() + 
+  facet_wrap(~ mountainRange) + 
+  xlab("length") + 
+  ylab("test score"))
+```
+
+We would have to estimate a slope and intercept parameter for each regression. That’s two parameters, three sites and eight mountain ranges, which means 48 parameter estimates (2 x 3 x 8 = 48)! Moreover, the sample size for each analysis would be only 20.
+
+This presents problems: not only are we hugely decreasing our sample size, but we are also increasing chances of a Type I Error (where you falsely reject the null hypothesis) by carrying out multiple comparisons. Не очень!
+
+```{r}
+mountain.lm <- lm(testScore ~ bodyLength2 + mountainRange, data = dragons)
+summary(mountain.lm)
+```
+
+Упс, длина драконов стала неважна(( --- плохо
+we are looking to control for the effects of mountain range. We haven’t sampled all the mountain ranges in the world (we have eight) so our data are just a sample of all the existing mountain ranges. We are not really interested in the effect of each specific mountain range on the test score, but we know that the test scores from within the ranges might be correlated so we want to control for that
+
+```{r}
+mixed.lmer <- lmer(testScore ~ bodyLength2 + (1|mountainRange), data = dragons)
+summary(mixed.lmer)
+```
+
+t-value очень маленькое. Эффект не значительный
+
+Авторы этого датасета, кстати, говорят, что это нехорошо включать род в случайные эффекты. По их мнению, случайные переменные должны иметь хотя бы 5 уровней, а у пола только два уровня.
+
+Так вот.
+Длина драконов не влияет на их интеллект
+```{r}
+qqnorm(resid(mixed.lmer))
+qqline(resid(mixed.lmer))  # good
+```
+
+```{r}
+summary(mixed.lmer)
+```
+
+Посмотрим еще раз внимательно на наши случайные эффекты
+
+Горы объясняет большую часть дисперсии. Они явно как-то сильно влияют
+
+Do keep in mind that’s 60% of variance “left over” after the variance explained by our fixed effects.
+
+```{r}
+339.7/(339.7 + 223.8)  # ~60 %
+```
+
+Explicit nesting - это самый адекватный подход при использовании пакета lme4. При работе с nlme() можно и без этого
+
+Нужно избегать имплицитной иерархической организации данных, потому что lme4 как мы уже выяснили на примере schooldata очень фигово различает crossed Vs nested effects
+```{r}
+dragons <- within(dragons, sample <- factor(mountainRange:site))
+head(dragons)
+str(dragons)
+```
+
+```{r}
+mixed.WRONG <- lmer(testScore ~ bodyLength2 + (1|mountainRange) + (1|site), data = dragons)  # treats the two random effects as if they are crossed
+summary(mixed.WRONG)
+```
+
+Смотрите, синтаксис остался тот же, но мы учли nested effects и не парилсь по поводу того, что там учитывает пакет lme4, а что - нет.
+```{r}
+mixed.lmer2 <- lmer(testScore ~ bodyLength2 + (1|mountainRange) + (1|sample), data = dragons)  # the syntax stays the same, but now the nesting is taken into account
+summary(mixed.lmer2)
+```
+
+Еще раз зачем random effects?  we are hoping that our random effects have **soaked up ** the influences 
+
+Теперь визуализируем
+```{r}
+(mm_plot <- ggplot(dragons, aes(x = bodyLength, y = testScore, colour = site)) +
+  facet_wrap(~mountainRange, nrow=3) +
+  geom_point() +
+  theme_classic() +
+  geom_line(data = cbind(dragons, pred = predict(mixed.lmer2)), aes(y = pred)) +
+  theme(legend.position = "none"))
+```
+
+```{r}
+stargazer(mixed.lmer2, type = "text",
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          digit.separator = "")
+```
+
+Reference:
+https://ourcodingclub.github.io/2017/03/15/mixed-models.html#nested
+
+
+
+
+
+
+
+
+
+## Mixed models shrinkage
+
+ По датасету GPA
+ и
+ https://m-clark.github.io/posts/2019-05-14-shrinkage-in-mixed-models/
+ 
+
+
+
+
+
+
+## Extended mixed models
+
+Dealing with heteroscidacity within group
+```{r}
+library(nlme)
+```
+
+Vonesh and Carter (1992) describe and analyze data measured on highﬂux hemodialyzers to assess their in vivo ultraﬁltration characteristics. The ultraﬁltration rates (in ml/hr) of 20 high-ﬂux dialyzers were measured at 7 ascending transmembrane pressures (in dmHg). The in vitro evaluation of the dialyzers used bovine blood at ﬂow rates of either 200 dl/min or 300dl/min.
+
+Ultraﬁltration rates versus transmembrane pressure by bovine blood ﬂow rate
+```{r}
+head(Dialyzer)
+```
+
+```{r}
+qplot(data = Dialyzer, x = pressure, y = rate)
+```
+
+Итак, мы знаем, что у нас есть гетероскедастичность в данных, но давайте попробуем всё равно зафитить модель с допущением о гомоскедастичности
+```{r}
+fm1Dial.lme <- lme(rate ~(pressure + pressure^2 + pressure^3 + pressure^4)*QB, Dialyzer, ~ pressure + pressure^2)
+fm1Dial.lme 
+```
+
+Это было нужно, чтобы посмотреть на residuals
+```{r}
+plot(fm1Dial.lme, resid(.) ~ pressure, abline = 0)
+```
+
+Зафитим модель с varPower, который разрешает гетероскедастичность
+```{r}
+fm2Dial.lme <- update(fm1Dial.lme, weights = varPower(form = ~ pressure))
+fm2Dial.lme
+```
+
+```{r}
+anova(fm1Dial.lme, fm2Dial.lme)
+```
+
+```{r}
+plot(fm2Dial.lme, resid(., type = "p") ~ pressure, abline = 0)
+```
+
+```{r}
+plot(fm2Dial.lme, resid(.) ~ pressure|QB, abline = 0)
+```
+
+```{r}
+fm3Dial.lme <- update(fm2Dial.lme, weights=varPower(form = ~ pressure | QB))
+fm3Dial.lme
+```
+
+```{r}
+anova(fm2Dial.lme, fm3Dial.lme)
+```
+
+```{r}
+fm4Dial.lme <- update(fm2Dial.lme, weights = varConstPower(form = ~ pressure))
+fm4Dial.lme
+```
+
+```{r}
+anova(fm2Dial.lme, fm4Dial.lme)
+```
+
+```{r}
+plot(augPred(fm2Dial.lme), grid = T)
+```
+
+```{r}
+anova(fm2Dial.lme)
+```
+
+**Что тут происходит?**
+
+
+
+
+
+
+## Датасеты для отчаянных
+
+Бооольше датасетоооов аааа
+
+Crossed effects
+```{r}
+data(abrasion, package="faraway")
+head(abrasion)
+```
+
+Nested effects
+```{r}
+data(eggs, package="faraway")
+summary(eggs)
+```
+
+```{r}
+ggplot(eggs, aes(y=Fat, x=Lab, color=Technician, shape=Sample)) + geom_point(position = position_jitter(width=0.1, height=0.0))
+```
+
+```{r}
+cmod <- lmer(Fat ~ 1 + (1|Lab) + (1|Lab:Technician) + (1|Lab:Technician:Sample), data=eggs)
+summary(cmod)
+```
+
+
+
+
+
+
