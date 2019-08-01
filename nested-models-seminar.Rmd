@@ -626,8 +626,8 @@ aa <- allFit(m1)
 ```
 
 ```{r}
-library(optimx)
-m4 <- update(m1_sc,start=ss,control=glmerControl(optimizer="optimx"))
+#library(optimx)
+#m4 <- update(m1_sc,start=ss,control=glmerControl(optimizer="optimx"))
 ```
 
 
@@ -808,6 +808,7 @@ summary(mixed.lmer2)
 ```
 
 ```{r}
+library(stargazer)
 stargazer(mixed.lmer2, type = "text",
           digits = 3,
           star.cutoffs = c(0.05, 0.01, 0.001),
